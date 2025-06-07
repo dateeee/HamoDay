@@ -1,0 +1,13 @@
+# ダウンロード系は無視
+recordings/*
+transcribe/downloads/*
+transcribe/texts/*
+# 設定ファイルを無視
+common/.aws.env
+# Pythonバイナリファイルを無視
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+# vsCodeの設定ファイルを無視
+.vscode/
