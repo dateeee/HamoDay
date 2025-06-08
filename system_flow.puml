@@ -1,0 +1,30 @@
+@startuml HamoDay
+rectangle "PC1" as PC1 <<PC>>
+rectangle "PC2" as PC2 <<PC>>
+cloud S3
+
+' PC1スペック情報（下部に表示）
+note bottom of PC1
+OS: Windows 11
+CPU: Intel Core i5-1235U
+RAM: 8GB
+Python: 3.11
+マイク: 標準搭載
+end note
+
+' PC2スペック情報（下部に表示）
+note bottom of PC2
+OS: Windows 11
+CPU: AMD Ryzen 7 7800x3D 8-Core
+RAM: 32GB
+GPU: NVIDIA GeForce RTX 4070 Ti Super
+Python: 3.11
+end note
+
+' PC1の録音は1分おきに処理
+PC1 -> S3 : 音声ファイルをアップロード\n(1分おき)
+
+' PC2のダウンロードは2分おきに処理
+S3 -> PC2 : 音声ファイルをダウンロード\n(2分おき)
+PC2 -> PC2 : 文字起こし・テキスト生成
+@enduml
