@@ -19,6 +19,7 @@ CPU: AMD Ryzen 7 7800x3D 8-Core
 RAM: 32GB
 GPU: NVIDIA GeForce RTX 4070 Ti Super
 Python: 3.11
+文字起こし: openai-whisper
 end note
 
 ' PC1の録音は1分おきに処理
