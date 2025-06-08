@@ -1,4 +1,5 @@
-from recorder import record_and_upload
+from recorder import RecordingManager
 
 if __name__ == '__main__':
-    record_and_upload()
+    manager = RecordingManager()
+    manager.run()

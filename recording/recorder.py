@@ -7,85 +7,111 @@ import pyaudio
 import boto3
 from dotenv import load_dotenv
 
-# 設定・パス管理
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'common', '.env'))
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'common', '.aws.env'))
-
-BUCKET_NAME = os.getenv('BUCKET_NAME', 'hamoday')
-S3_OBJECT_PREFIX = os.getenv('S3_OBJECT_PREFIX', 'audio/')
-FORMAT = getattr(pyaudio, os.getenv('FORMAT', 'paInt16'))
-CHANNELS = int(os.getenv('CHANNELS', 1))
-RATE = int(os.getenv('RATE', 44100))
-CHUNK = int(os.getenv('CHUNK', 1024))
-RECORD_SECONDS = int(os.getenv('RECORD_SECONDS', 60))
-WAVE_OUTPUT_DIR = os.getenv('WAVE_OUTPUT_DIR', 'recordings')
-
-# S3クライアント
-s3 = boto3.client('s3')
-
-def ensure_dirs():
-    if not os.path.exists(WAVE_OUTPUT_DIR):
-        os.makedirs(WAVE_OUTPUT_DIR)
-
-def upload_worker(q):
+class ConfigLoader:
     """
-    S3へのアップロードを担当するワーカースレッド関数。
-    キューからファイルパスとファイル名を受け取り、
-    S3へアップロード後、ローカルファイルを削除する。
-    アップロード失敗時はファイルを残す。
+    設定ファイルの読み込みと環境変数の取得を一元管理
     """
-    while True:
-        filepath, filename = q.get()
-        if filepath is None:
-            break
-        s3_key = S3_OBJECT_PREFIX + filename
+    def __init__(self):
+        base_dir = os.path.dirname(os.path.dirname(__file__))
+        load_dotenv(os.path.join(base_dir, 'common', '.env'))
+        load_dotenv(os.path.join(base_dir, 'common', '.aws.env'))
+        self.bucket_name = os.getenv('BUCKET_NAME', 'hamoday')
+        self.s3_object_prefix = os.getenv('S3_OBJECT_PREFIX', 'audio/')
+        self.format = getattr(pyaudio, os.getenv('FORMAT', 'paInt16'))
+        self.channels = int(os.getenv('CHANNELS', 1))
+        self.rate = int(os.getenv('RATE', 44100))
+        self.chunk = int(os.getenv('CHUNK', 1024))
+        self.record_seconds = int(os.getenv('RECORD_SECONDS', 60))
+        self.wave_output_dir = os.getenv('WAVE_OUTPUT_DIR', 'recordings')
+
+class Recorder:
+    """
+    録音処理とファイル保存のみを担当
+    """
+    def __init__(self, config: ConfigLoader):
+        self.config = config
+        self.p = pyaudio.PyAudio()
+        if not os.path.exists(self.config.wave_output_dir):
+            os.makedirs(self.config.wave_output_dir)
+
+    def record(self):
+        stream = self.p.open(format=self.config.format,
+                             channels=self.config.channels,
+                             rate=self.config.rate,
+                             input=True,
+                             frames_per_buffer=self.config.chunk)
+        frames = []
+        for _ in range(0, int(self.config.rate / self.config.chunk * self.config.record_seconds)):
+            data = stream.read(self.config.chunk)
+            frames.append(data)
+        filename = f'recording_{int(time.time())}.wav'
+        filepath = os.path.join(self.config.wave_output_dir, filename)
+        wf = wave.open(filepath, 'wb')
+        wf.setnchannels(self.config.channels)
+        wf.setsampwidth(self.p.get_sample_size(self.config.format))
+        wf.setframerate(self.config.rate)
+        wf.writeframes(b''.join(frames))
+        wf.close()
+        stream.stop_stream()
+        stream.close()
+        return filepath, filename
+
+    def terminate(self):
+        self.p.terminate()
+
+class S3Uploader:
+    """
+    S3クライアントの生成とアップロード処理のみを担当
+    """
+    def __init__(self, config: ConfigLoader):
+        self.config = config
+        self.s3 = boto3.client('s3')
+
+    def upload(self, filepath, filename):
+        s3_key = self.config.s3_object_prefix + filename
         try:
-            s3.upload_file(filepath, BUCKET_NAME, s3_key)
+            self.s3.upload_file(filepath, self.config.bucket_name, s3_key)
             print(f'S3アップロード完了: {s3_key}')
             os.remove(filepath)
             print(f'ローカルファイル削除: {filepath}')
         except Exception as e:
             print(f'S3アップロード失敗: {e}')
-        finally:
-            q.task_done()
 
-def record_and_upload():
+class RecordingManager:
     """
-    音声を録音し、録音ファイルをS3アップロード用キューに追加する関数。
-    録音は指定秒数ごとに繰り返し行われる。
+    各クラスを組み合わせて全体の流れを制御
     """
-    ensure_dirs()
-    p = pyaudio.PyAudio()
-    stream = p.open(format=FORMAT,
-                    channels=CHANNELS,
-                    rate=RATE,
-                    input=True,
-                    frames_per_buffer=CHUNK)
-    count = 0
-    q = queue.Queue()
-    uploader = threading.Thread(target=upload_worker, args=(q,), daemon=True)
-    uploader.start()
-    try:
+    def __init__(self):
+        self.config = ConfigLoader()
+        self.recorder = Recorder(self.config)
+        self.uploader = S3Uploader(self.config)
+        self.q = queue.Queue()
+        self.uploader_thread = threading.Thread(target=self.upload_worker, daemon=True)
+        self.uploader_thread.start()
+
+    def upload_worker(self):
         while True:
-            print(f'録音開始: {count+1}ファイル目')
-            frames = []
-            for _ in range(0, int(RATE / CHUNK * RECORD_SECONDS)):
-                data = stream.read(CHUNK)
-                frames.append(data)
-            filename = f'recording_{int(time.time())}.wav'
-            filepath = os.path.join(WAVE_OUTPUT_DIR, filename)
-            wf = wave.open(filepath, 'wb')
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(p.get_sample_size(FORMAT))
-            wf.setframerate(RATE)
-            wf.writeframes(b''.join(frames))
-            wf.close()
-            print(f'録音保存: {filepath}')
-            q.put((filepath, filename))
-            count += 1
-    finally:
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
-        q.put((None, None))
-        uploader.join()
+            item = self.q.get()
+            if item is None:
+                break
+            filepath, filename = item
+            self.uploader.upload(filepath, filename)
+            self.q.task_done()
+
+    def run(self):
+        count = 0
+        try:
+            while True:
+                print(f'録音開始: {count+1}ファイル目')
+                filepath, filename = self.recorder.record()
+                print(f'録音保存: {filepath}')
+                self.q.put((filepath, filename))
+                count += 1
+        finally:
+            self.recorder.terminate()
+            self.q.put(None)
+            self.uploader_thread.join()
+
+if __name__ == '__main__':
+    manager = RecordingManager()
+    manager.run()
